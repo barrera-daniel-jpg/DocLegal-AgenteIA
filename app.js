@@ -2,11 +2,9 @@
 // CONFIGURACIÓN
 // =============================================
 
-// CORRECCIÓN: el modelo correcto es qwen2.5:1.5b (no qwen2:1.5b)
-// y la API correcta para instrucciones es /api/chat (no /api/generate)
 const OLLAMA_BASE = 'http://localhost:11434';
 const OLLAMA_URL = `${OLLAMA_BASE}/api/chat`;
-const MODELO = 'qwen2.5:1.5b';
+const MODELO = 'phi3.5:3.8b';
 
 // Variables globales
 let archivos = [];
@@ -21,7 +19,7 @@ pdfjsLib.GlobalWorkerOptions.workerSrc =
 // VERIFICAR QUE OLLAMA ESTÁ CORRIENDO
 // =============================================
 
-async function verificarOllama() {
+async function verificarOllama() {lllll
     const badge = document.getElementById('statusBadge');
     try {
         const res = await fetch(`${OLLAMA_BASE}/api/tags`);
@@ -30,7 +28,8 @@ async function verificarOllama() {
         const datos = await res.json();
         // Verificar si el modelo específico está descargado
         const modelos = (datos.models || []).map(m => m.name);
-        const tieneModelo = modelos.some(m => m.startsWith('qwen2.5:1.5b'));
+        const tieneModelo = modelos.some(m => m.startsWith('phi3.5'));
+
 
         if (tieneModelo) {
             badge.textContent = `✓ ${MODELO} listo`;
@@ -165,8 +164,9 @@ async function extraerTextoPDF(archivo) {
         textoCompleto += textoPagina + '\n';
     }
 
-    // 3000 caracteres es suficiente para qwen2.5:1.5b y evita context overflow
-    return textoCompleto.substring(0, 3000);
+    // 5000 caracteres es suficiente para el agente y evita context overflow
+    return textoCompleto.substring(0, 5000); // phi3.5 maneja más contexto sin problemas
+
 }
 
 
@@ -178,21 +178,43 @@ async function extraerTextoPDF(archivo) {
 // Los modelos pequeños se confunden con prompts largos o con demasiados ejemplos.
 // Usar /api/chat con messages[] es más estable que /api/generate para instrucciones.
 
-const INSTRUCCIONES = `Eres un extractor de datos de documentos colombianos.
-Responde SOLO con JSON. Sin texto extra, sin markdown.
+const INSTRUCCIONES = `Eres un sistema experto en clasificación de documentos legales y contables colombianos.
+Tu tarea es analizar el texto de UN documento y extraer sus datos clave.
 
-Tipos válidos (elige uno): Factura | RUT | DIAN | Judicial | Contrato | Otro
-Estados válidos (elige uno): pagado | pendiente | vencido | desconocido
-Confianza: número entre 0 y 1 según qué tan seguro estás.
+REGLAS ESTRICTAS:
+1. Responde ÚNICAMENTE con un objeto JSON válido. Sin texto antes ni después. Sin markdown.
+2. Analiza solo el documento proporcionado, no mezcles datos entre documentos.
+3. Si un campo no aparece en el texto, usa null (no inventes valores).
+4. El campo "confianza" refleja qué tan seguro estás de tu clasificación (0.0 a 1.0).
 
-JSON obligatorio:
-{"tipo":"","emisor":null,"nit_emisor":null,"receptor":null,"nit_receptor":null,"numero_documento":null,"fecha":null,"monto":null,"estado":"desconocido","confianza":0.9,"resumen":""}
+TIPOS DE DOCUMENTO (elige el más preciso):
+- Factura: factura de venta, factura electrónica, nota crédito/débito
+- RUT: Registro Único Tributario de la DIAN
+- DIAN: resoluciones, habilitaciones, comunicados de la DIAN
+- Judicial: demandas, autos, sentencias, poderes, tutelas
+- Contrato: contratos, acuerdos, convenios, otrosíes
+- Otro: cualquier documento que no encaje en las categorías anteriores
 
-Reglas:
-- fecha en formato YYYY-MM-DD o null
-- monto como número sin símbolos o null  
-- resumen máximo 15 palabras
-- Si no encuentras un campo usa null`;
+FORMATO DE RESPUESTA (respeta exactamente estas claves):
+{
+"tipo": "",
+"emisor": null,
+"nit_emisor": null,
+"receptor": null,
+"nit_receptor": null,
+"numero_documento": null,
+"fecha": null,
+"monto": null,
+"estado": "desconocido",
+"confianza": 0.9,
+"resumen": ""
+}
+
+NOTAS DE FORMATO:
+- fecha: usa YYYY-MM-DD o null
+- monto: número sin símbolos ni puntos (ej: 150000), o null
+- estado: solo puede ser "pagado", "pendiente", "vencido" o "desconocido"
+- resumen: descripción breve del documento en máximo 20 palabras`;
 
 async function clasificarConOllama(texto, nombreArchivo) {
     const respuesta = await fetch(OLLAMA_URL, {
@@ -203,10 +225,10 @@ async function clasificarConOllama(texto, nombreArchivo) {
             stream: false,
             format: 'json',          // Ollama fuerza salida JSON válida
             options: {
-                temperature: 0,      // 0 = máxima determinismo, ideal para extracción
-                num_predict: 250,    // suficiente para el JSON completo
-                num_ctx: 2048        // contexto reducido para ahorrar RAM en 6 GB
-            },
+            temperature: 0,
+            num_predict: 400,   // phi3.5 puede generar respuestas más completas
+            num_ctx: 4096       // más contexto = mejor comprensión del documento
+        },
             messages: [
                 {
                     role: 'system',
@@ -246,7 +268,7 @@ async function clasificarConOllama(texto, nombreArchivo) {
 }
 
 // NUEVO: reintento automático si el JSON falla (común en modelos pequeños)
-async function clasificarConReintentos(texto, nombreArchivo, intentos = 2) {
+async function clasificarConReintentos(texto, nombreArchivo, intentos = 3)  {
     let ultimoError;
     for (let i = 0; i < intentos; i++) {
         try {
@@ -290,7 +312,6 @@ async function clasificarTodo() {
                 texto = await extraerTextoPDF(item.archivo);
             } else {
                 // Para imágenes: usar nombre como pista de clasificación
-                // qwen2.5:1.5b no soporta visión, pero el nombre suele dar contexto
                 const ext = item.archivo.name.split('.').pop().toUpperCase();
                 texto = `Archivo de imagen ${ext}: ${item.archivo.name}
 Nota: documento escaneado sin texto extraíble. Clasificar por nombre de archivo.`;
